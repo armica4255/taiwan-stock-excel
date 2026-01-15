@@ -6,10 +6,10 @@ import os
 from google.oauth2.service_account import Credentials
 from datetime import datetime
 
-# ===== 固定你的 Google Sheets ID（非常重要）=====
+# ===== 固定你的 Google Sheets ID =====
 SPREADSHEET_ID = "1H3JDRbMVSWjZvIHFtFzv3NhPKPO-KRqiX_XMpLtjjZI"
 
-# 台股標的
+# 台股標的與 Sheet 名稱
 STOCKS = {
     "2330.TW": "2330",
     "0050.TW": "0050",
@@ -19,39 +19,38 @@ STOCKS = {
 START_DATE = "2020-01-02"
 END_DATE = datetime.today().strftime("%Y-%m-%d")
 
-# 讀取 GitHub Secret 裡的 Google 金鑰
+# 讀取 GitHub Secret
 creds_dict = json.loads(os.environ["GOOGLE_CREDENTIALS"])
 scopes = ["https://www.googleapis.com/auth/spreadsheets"]
 creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
 gc = gspread.authorize(creds)
 
-# ✅ 用「試算表 ID」打開（不會再寫錯）
-sheet = gc.open_by_key(SPREADSHEET_ID)
+# 用 Spreadsheet ID 開啟（最穩）
+sh = gc.open_by_key(SPREADSHEET_ID)
 
 for ticker, sheet_name in STOCKS.items():
-    print(f"Downloading {ticker}")
+    print(f"Processing {ticker}")
 
     df = yf.download(
         ticker,
         start=START_DATE,
         end=END_DATE,
-        progress=False,
-        auto_adjust=False
+        progress=False
     )
 
     if df.empty:
-        print(f"No data for {ticker}, skip.")
+        print(f"No data for {ticker}")
         continue
 
     df = df[["Open", "High", "Low", "Close"]]
     df.reset_index(inplace=True)
     df.columns = ["日期", "開盤價", "最高價", "最低價", "收盤價"]
 
-    # 計算漲跌幅 %
+    # 漲跌幅 %
     df["漲跌幅%"] = df["收盤價"].pct_change() * 100
     df["漲跌幅%"] = df["漲跌幅%"].round(2)
 
-    ws = sheet.worksheet(sheet_name)
+    ws = sh.worksheet(sheet_name)
     ws.clear()
 
     ws.update(
@@ -59,4 +58,4 @@ for ticker, sheet_name in STOCKS.items():
         df.astype(str).values.tolist()
     )
 
-print("Update completed")
+print("All stocks updated successfully")
