@@ -2,76 +2,71 @@ import requests
 import gspread
 import json
 import os
+from datetime import datetime
 from google.oauth2.service_account import Credentials
 
-# ===== 基本設定 =====
 SPREADSHEET_ID = "1H3JDRbMVSWjZvIHFtFzv3NhPKPO-KRqiX_XMpLtjjZI"
-STOCKS = {
-    "2330": "2330",
-    "0050": "0050",
-    "006208": "006208"
-}
+STOCKS = ["2330", "0050", "006208"]
 
 # ===== Google Sheets 認證 =====
-creds_dict = json.loads(os.environ["GOOGLE_CREDENTIALS"])
+creds = json.loads(os.environ["GOOGLE_CREDENTIALS"])
 scopes = ["https://www.googleapis.com/auth/spreadsheets"]
-credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-gc = gspread.authorize(credentials)
+gc = gspread.authorize(Credentials.from_service_account_info(creds, scopes=scopes))
 sh = gc.open_by_key(SPREADSHEET_ID)
 
-# ===== 價格清洗（只去逗號，不改數值）=====
-def clean_price(value):
-    return float(value.replace(",", ""))
+HEADERS = ["日期", "開盤", "最高", "最低", "收盤", "成交股數"]
 
-# ===== 證交所 API（最近一個交易日）=====
-def fetch_latest_twse(stock_id):
+def fmt_price(v):
+    return round(float(v.replace(",", "")), 2)
+
+def fetch_month(stock, yyyymm):
     url = "https://www.twse.com.tw/exchangeReport/STOCK_DAY"
-    params = {
-        "response": "json",
-        "stockNo": stock_id
-    }
-    headers = {"User-Agent": "Mozilla/5.0"}
+    r = requests.get(
+        url,
+        params={"response": "json", "date": yyyymm, "stockNo": stock},
+        headers={"User-Agent": "Mozilla/5.0"},
+        timeout=10
+    )
+    j = r.json()
+    if j["stat"] != "OK":
+        return []
 
-    r = requests.get(url, params=params, headers=headers, timeout=10)
-    data = r.json()
+    rows = []
+    for d in j["data"]:
+        y, m, d2 = d[0].split("/")
+        date = f"{int(y)+1911}-{m}-{d2}"
+        rows.append([
+            date,
+            fmt_price(d[3]),
+            fmt_price(d[4]),
+            fmt_price(d[5]),
+            fmt_price(d[6]),
+            int(d[1].replace(",", ""))
+        ])
+    return rows
 
-    if data["stat"] != "OK" or not data["data"]:
-        return None
+def month_range(start="202001"):
+    y, m = int(start[:4]), int(start[4:])
+    now = datetime.now()
+    while (y < now.year) or (y == now.year and m <= now.month):
+        yield f"{y}{m:02d}"
+        m += 1
+        if m == 13:
+            y += 1
+            m = 1
 
-    last = data["data"][-1]
-
-    # 民國 → 西元
-    roc_date = last[0]
-    y, m, d = roc_date.split("/")
-    date = f"{int(y) + 1911}-{m}-{d}"
-
-    return [
-        date,
-        clean_price(last[3]),  # 開盤
-        clean_price(last[4]),  # 最高
-        clean_price(last[5]),  # 最低
-        clean_price(last[6]),  # 收盤
-        int(last[1].replace(",", ""))  # 成交股數
-    ]
-
-# ===== 寫入 / 覆蓋 Google Sheets =====
-for sheet_name, stock_id in STOCKS.items():
+for stock in STOCKS:
     try:
-        ws = sh.worksheet(sheet_name)
+        ws = sh.worksheet(stock)
+        ws.clear()
     except:
-        ws = sh.add_worksheet(title=sheet_name, rows="5000", cols="10")
-        ws.append_row(["日期", "開盤", "最高", "最低", "收盤", "成交股數"])
+        ws = sh.add_worksheet(stock, rows=6000, cols=10)
 
-    row = fetch_latest_twse(stock_id)
-    if not row:
-        continue
+    ws.append_row(HEADERS)
 
-    dates = ws.col_values(1)
+    all_rows = []
+    for ym in month_range():
+        all_rows.extend(fetch_month(stock, ym))
 
-    if row[0] in dates:
-        # 🔁 覆蓋舊的（錯的）資料
-        row_index = dates.index(row[0]) + 1
-        ws.update(f"A{row_index}:F{row_index}", [row])
-    else:
-        # ➕ 新增
-        ws.append_row(row)
+    if all_rows:
+        ws.append_rows(all_rows)
