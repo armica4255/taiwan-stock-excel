@@ -1,1 +1,35 @@
-test
+name: Update Taiwan Stock Excel
+
+on:
+  schedule:
+    - cron: "0 7 * * 1-5"  # 台灣時間 15:00
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        pip install -r requirements.txt
+
+    - name: Run update script
+      run: |
+        python update_excel.py
+
+    - name: Commit and push
+      run: |
+        git config user.name "github-actions"
+        git config user.email "github-actions@github.com"
+        git add docs/台股每日紀錄.xlsx
+        git commit -m "Auto update stock data"
+        git push
+
