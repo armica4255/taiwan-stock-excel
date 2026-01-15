@@ -1,61 +1,71 @@
-import yfinance as yf
-import pandas as pd
+import requests
 import gspread
 import json
 import os
-from google.oauth2.service_account import Credentials
 from datetime import datetime
+from google.oauth2.service_account import Credentials
 
-# ===== 固定你的 Google Sheets ID =====
+# ===== 基本設定 =====
 SPREADSHEET_ID = "1H3JDRbMVSWjZvIHFtFzv3NhPKPO-KRqiX_XMpLtjjZI"
-
-# 台股標的與 Sheet 名稱
 STOCKS = {
-    "2330.TW": "2330",
-    "0050.TW": "0050",
-    "006208.TW": "006208"
+    "2330": "2330",
+    "0050": "0050",
+    "006208": "006208"
 }
 
-START_DATE = "2020-01-02"
-END_DATE = datetime.today().strftime("%Y-%m-%d")
-
-# 讀取 GitHub Secret
+# ===== Google Sheets 認證 =====
 creds_dict = json.loads(os.environ["GOOGLE_CREDENTIALS"])
 scopes = ["https://www.googleapis.com/auth/spreadsheets"]
-creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-gc = gspread.authorize(creds)
-
-# 用 Spreadsheet ID 開啟（最穩）
+credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+gc = gspread.authorize(credentials)
 sh = gc.open_by_key(SPREADSHEET_ID)
 
-for ticker, sheet_name in STOCKS.items():
-    print(f"Processing {ticker}")
+# ===== 今日日期 =====
+today = datetime.now().strftime("%Y%m%d")
 
-    df = yf.download(
-        ticker,
-        start=START_DATE,
-        end=END_DATE,
-        progress=False
-    )
+# ===== 證交所 API =====
+def fetch_twse(stock_id):
+    url = "https://www.twse.com.tw/exchangeReport/STOCK_DAY"
+    params = {
+        "response": "json",
+        "date": today,
+        "stockNo": stock_id
+    }
+    r = requests.get(url, params=params, timeout=10)
+    data = r.json()
 
-    if df.empty:
-        print(f"No data for {ticker}")
+    if data["stat"] != "OK":
+        return None
+
+    # 只取「最後一筆（最新交易日）」
+    last = data["data"][-1]
+
+    # 日期轉西元
+    roc_date = last[0]  # 112/01/15
+    y, m, d = roc_date.split("/")
+    date = f"{int(y)+1911}-{m}-{d}"
+
+    return [
+        date,
+        int(float(last[3])),  # 開盤
+        int(float(last[4])),  # 最高
+        int(float(last[5])),  # 最低
+        int(float(last[6])),  # 收盤
+        int(last[1].replace(",", ""))  # 成交股數
+    ]
+
+# ===== 寫入 Sheet =====
+for sheet_name, stock_id in STOCKS.items():
+    try:
+        ws = sh.worksheet(sheet_name)
+    except:
+        ws = sh.add_worksheet(title=sheet_name, rows="2000", cols="10")
+        ws.append_row(["日期", "開盤", "最高", "最低", "收盤", "成交股數"])
+
+    row = fetch_twse(stock_id)
+    if not row:
         continue
 
-    df = df[["Open", "High", "Low", "Close"]]
-    df.reset_index(inplace=True)
-    df.columns = ["日期", "開盤價", "最高價", "最低價", "收盤價"]
-
-    # 漲跌幅 %
-    df["漲跌幅%"] = df["收盤價"].pct_change() * 100
-    df["漲跌幅%"] = df["漲跌幅%"].round(2)
-
-    ws = sh.worksheet(sheet_name)
-    ws.clear()
-
-    ws.update(
-        [df.columns.tolist()] +
-        df.astype(str).values.tolist()
-    )
-
-print("All stocks updated successfully")
+    dates = ws.col_values(1)
+    if row[0] not in dates:
+        ws.append_row(row)
