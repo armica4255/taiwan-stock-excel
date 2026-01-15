@@ -19,20 +19,18 @@ credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
 gc = gspread.authorize(credentials)
 sh = gc.open_by_key(SPREADSHEET_ID)
 
-# ===== 價格清洗（只去逗號，不動數值）=====
+# ===== 價格清洗（只去逗號，不改數值）=====
 def clean_price(value):
     return float(value.replace(",", ""))
 
-# ===== 證交所 API：抓「最近一個交易日」=====
+# ===== 證交所 API（最近一個交易日）=====
 def fetch_latest_twse(stock_id):
     url = "https://www.twse.com.tw/exchangeReport/STOCK_DAY"
     params = {
         "response": "json",
         "stockNo": stock_id
     }
-    headers = {
-        "User-Agent": "Mozilla/5.0"
-    }
+    headers = {"User-Agent": "Mozilla/5.0"}
 
     r = requests.get(url, params=params, headers=headers, timeout=10)
     data = r.json()
@@ -40,9 +38,9 @@ def fetch_latest_twse(stock_id):
     if data["stat"] != "OK" or not data["data"]:
         return None
 
-    last = data["data"][-1]  # 最近交易日
+    last = data["data"][-1]
 
-    # 民國轉西元
+    # 民國 → 西元
     roc_date = last[0]
     y, m, d = roc_date.split("/")
     date = f"{int(y) + 1911}-{m}-{d}"
@@ -56,7 +54,7 @@ def fetch_latest_twse(stock_id):
         int(last[1].replace(",", ""))  # 成交股數
     ]
 
-# ===== 寫入 Google Sheets =====
+# ===== 寫入 / 覆蓋 Google Sheets =====
 for sheet_name, stock_id in STOCKS.items():
     try:
         ws = sh.worksheet(sheet_name)
@@ -69,5 +67,11 @@ for sheet_name, stock_id in STOCKS.items():
         continue
 
     dates = ws.col_values(1)
-    if row[0] not in dates:
+
+    if row[0] in dates:
+        # 🔁 覆蓋舊的（錯的）資料
+        row_index = dates.index(row[0]) + 1
+        ws.update(f"A{row_index}:F{row_index}", [row])
+    else:
+        # ➕ 新增
         ws.append_row(row)
